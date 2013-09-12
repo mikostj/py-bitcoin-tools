@@ -27,35 +27,14 @@ unpad = lambda s : s[0:-ord(s[-1])]
 __b58chars = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
 __b58base = len(__b58chars)
 
-# BEGIN non-standard encryption (testing)
+def AES256Encrypt(plaintext, key):
+    cipher = AES.new(key, AES.MODE_ECB)
+    return cipher.encrypt(plaintext)
 
-def AESencrypt(plaintext, passphrase):
-    raw = pad(plaintext)
-    key = hashlib.sha256(passphrase).digest()
-    iv = os.urandom(AES.block_size)
-    cipher = AES.new(key, AES.MODE_CBC, iv)
-    return base64.b64encode(iv + cipher.encrypt(raw))
+def AES256Decrypt(encrypted, key):
+    cipher = AES.new(key, AES.MODE_ECB)
+    return cipher.decrypt(encrypted)
 
-def AESdecrypt(encrypted, passphrase):
-    encrypted = base64.b64decode(encrypted)
-    key = hashlib.sha256(passphrase).digest()
-    # Determine IV
-    iv = encrypted[:16]
-    cipher = AES.new(key, AES.MODE_CBC, iv)
-    return unpad(cipher.decrypt(encrypted[16:]))
-
-def ARC4encrypt(plaintext, passphrase):
-    key = hashlib.sha256(passphrase).digest()
-    enc = ARC4.new(key)
-    return base64.b64encode(enc.encrypt(plaintext))
-
-def ARC4decrypt(encrypted, passphrase):
-    encrypted = base64.b64decode(encrypted)
-    key = hashlib.sha256(passphrase).digest()
-    dec = ARC4.new(key)
-    return dec.decrypt(encrypted)
-
-# END non-standard encryption
 # BEGIN b58
 
 def b58encode(v):
@@ -168,27 +147,49 @@ def BIP38encrypt(WIFkey,passphrase):
     """
     BIP0038 encrypt a wallet import format privatekey without EC multiplication
     """
+    passphrase = passphrase.encode('utf8')
     ##Compute the Bitcoin address (ASCII),
-    address = address_from_privkey.determine_address(WIFkey)
+    ## TODO: investigate determine_address (ecdsa assert error)
+    #address = determine_address(WIFkey)
+    # hardcoded for testing
+    address = '1CciesT23BNionJeXrbxmjc7ywfiyM4oLW'
     ##take the first four bytes of SHA256(SHA256()) of it. Let's call this "addresshash".
-    addresshash = SHA256(SHA256(address))
-    addresshash = addresshash[:4]
+    hash1 = hashlib.sha256(address).digest()
+    hash2 = hashlib.sha256(hash1).digest()
+    addresshash = hash2[:4]
     ##Derive a key from the passphrase using scrypt
     ##Parameters: passphrase is the passphrase itself encoded in UTF-8. (salt is addresshash)
     ##addresshash, n=16384, r=8, p=8, length=64 (n, r, p are provisional and subject to consensus)
     # scrypt.hash('password','random salt')
-    key = scrypt.hash(passphrase, addresshash, n=16384, r=8, p=8, length=64)
+    key = scrypt.hash(passphrase, addresshash, N=16384, r=8, p=8, buflen=64)
+    print('Scrypt-derived key %s' % key)
     ##Let's split the resulting 64 bytes in half, and call them derivedhalf1 and derivedhalf2.
     derivedhalf1 = key[:31]
+    print('derivedhalf1: %s' % derivedhalf1)
     derivedhalf2 = key[32:]
+    print('derivedhalf2: %s' % derivedhalf2)
     ##Do AES256Encrypt(bitcoinprivkey[0...15] xor derivedhalf1[0...15], derivedhalf2), call the 16-byte result encryptedhalf1
-    #encryptedhalf1 = AES256encrypt(WIFprivkey[:15] xor derivedhalf1[:15],derivedhalf2)
+    XOR1 = sxor(WIFkey[:15],derivedhalf1[:15])
+    encryptedhalf1 = AES256Encrypt(XOR1,derivedhalf2)
+    print('encryptedhalf1: %s' % encryptedhalf1)
     ##Do AES256Encrypt(bitcoinprivkey[16...31] xor derivedhalf1[16...31], derivedhalf2), call the 16-byte result encryptedhalf2
-    #encryptedhalf2 = AES256encrypt(WIFprivkey[16:] xor derivedhalf1[16:],derivedhalf2)
-    ##The encrypted private key is the Base58Check-encoded concatenation of the following,
+    XOR2 = sxor(WIFkey[16:],derivedhalf1[16:])
+    encryptedhalf1 = AES256Encrypt(XOR2,derivedhalf2)
+    print('encryptedhalf2: %s' % encryptedhalf2)
+    ##The encrypted private key is the Base58Check-encoded concatenation of the following
     ##which totals 39 bytes without Base58 checksum:
     ##0x01 0x42 + flagbyte + salt + encryptedhalf1 + encryptedhalf2
-    return b58encode(0x01+0x42+flagbyte+salt+encryptedhalf1+encryptedhalf2)
+    ## TODO: ensure leading bytes and flagbyte are set properly
+    return b58encode(0x01+0x42+'flagbyte'+addresshash+encryptedhalf1+encryptedhalf2)
+
+# http://stackoverflow.com/questions/2612720/
+def sxor(s1,s2):    
+    # convert strings to a list of character pair tuples
+    # go through each tuple, converting them to ASCII code (ord)
+    # perform exclusive or on the ASCII code
+    # then convert the result back to ASCII (chr)
+    # merge the resulting array of characters as a string
+    return ''.join(chr(ord(a) ^ ord(b)) for a,b in zip(s1,s2))
 
 def BIP38encrypt_EC(WIFkey,passphrase):
     """
